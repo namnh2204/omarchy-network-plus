@@ -427,6 +427,9 @@ function linkLabel(link) {
 
 function linkIcon(link) {
   var value = link || {}
+  // An offline card gets the disconnected glyph rather than a one-bar signal
+  // icon, which would otherwise read as "connected, weak".
+  if (!value.connected) return connectionIcon("disconnected", -1)
   return connectionIcon(value.kind === "other" ? "" : value.kind, value.signal)
 }
 
@@ -462,6 +465,41 @@ function collectLinks(samples) {
   return sortLinks(links)
 }
 
+// Every card worth offering in the picker, connected or not.
+//
+// The picker is built from this rather than from the connected-only list. Gating
+// it on connected links meant that when a radio dropped, the whole section
+// disappeared -- taking away the control needed to look at that card or
+// reconnect it, with no indication it existed at all.
+//
+// A Wi-Fi radio is always offered: it can associate, so selecting it is how you
+// reach its network list. An Ethernet port is only offered when it is actually
+// connected, since an empty port is not something you can act on.
+function collectPickerLinks(samples) {
+  var rows = Array.isArray(samples) ? samples : []
+  var links = []
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i]
+    if (!row || !row.iface) continue
+    if (row.kind === "wifi" || row.connected) links.push(row)
+  }
+
+  links.sort(function(a, b) {
+    // Live cards first, then the same ordering the tooltip uses.
+    if (!!a.connected !== !!b.connected) return a.connected ? -1 : 1
+    if (!!a.primary !== !!b.primary) return a.primary ? -1 : 1
+    if (a.kind !== b.kind) {
+      if (a.kind === "ethernet") return -1
+      if (b.kind === "ethernet") return 1
+    }
+    if ((b.signal || 0) !== (a.signal || 0)) return (b.signal || 0) - (a.signal || 0)
+    return String(a.iface || "").localeCompare(String(b.iface || ""))
+  })
+
+  return links
+}
+
 function linkDetail(link) {
   var value = link || {}
   if (value.kind === "wifi") {
@@ -482,6 +520,7 @@ function linkTooltipLine(link) {
   if (detail !== "") parts[0] = parts[0] + " (" + detail + ")"
   if (value.iface) parts.push(value.iface)
   if (value.address) parts.push(value.address)
+  if (!value.connected) parts.push("not connected")
 
   return parts.join(" · ")
 }
@@ -496,15 +535,17 @@ function barTooltip(links) {
   return lines.join("\n")
 }
 
-// Header summary for the panel when several links are up.
-function activeLinksTitle(links) {
-  var rows = Array.isArray(links) ? links : []
-  if (rows.length <= 1) return ""
-  return "ACTIVE CONNECTIONS: " + rows.length
+// Header summary for the picker. Counts what is live, but the section itself
+// stays mounted whenever the machine has more than one card, so a dropped radio
+// does not take the picker with it.
+function pickerTitle(activeCount) {
+  var n = parseInt(activeCount, 10)
+  if (!isFinite(n) || n <= 0) return "NETWORK INTERFACES"
+  return "INTERFACES · " + n + " ACTIVE"
 }
 
-// Short pill label. The SSID carries the meaning, but two radios on the same
-// SSID are indistinguishable by name alone, so the interface disambiguates.
+// Pill label for an offline card still needs to say something useful, and its
+// SSID is gone, so the interface name carries it either way.
 function linkPillLabel(link) {
   var value = link || {}
   var iface = value.iface || ""
@@ -613,10 +654,11 @@ if (typeof module !== "undefined") {
     linkIcon: linkIcon,
     sortLinks: sortLinks,
     collectLinks: collectLinks,
+    collectPickerLinks: collectPickerLinks,
+    pickerTitle: pickerTitle,
     linkDetail: linkDetail,
     linkTooltipLine: linkTooltipLine,
     barTooltip: barTooltip,
-    activeLinksTitle: activeLinksTitle,
     linkPillLabel: linkPillLabel,
     linkPillTooltip: linkPillTooltip,
     defaultLinkIface: defaultLinkIface,

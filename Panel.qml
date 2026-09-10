@@ -128,10 +128,10 @@ Panel {
   // within header actions, band pills, or DNS providers.
   property string focusSection: "dns"  // "header" | "links" | "band" | "dns" | "wifi"
   property int headerIndex: 0
-  // Cursor slot within the interface picker. The section only exists when more
-  // than one link is up, so navigation skips it on a single-link machine.
+  // Cursor slot within the interface picker. The section only exists when the
+  // machine has more than one selectable card.
   property int linkIndex: 0
-  readonly property bool canSelectLink: activeLinkCount > 1
+  readonly property bool canSelectLink: pickerLinkCount > 1
   readonly property bool canDisconnect: !!connectedWifiNetwork
   readonly property bool headerHasDisconnect: false
   readonly property bool canShareWifi: info.type === "wifi" && canShareNetwork(connectedWifiNetwork)
@@ -183,19 +183,19 @@ Panel {
   // Links come and go as radios associate or drop, so the cursor can be left
   // pointing past the end of the row. Clamp it, and evacuate the section before
   // it disappears entirely.
-  onActiveLinkCountChanged: {
-    if (linkIndex > activeLinkCount - 1) linkIndex = Math.max(0, activeLinkCount - 1)
+  onPickerLinkCountChanged: {
+    if (linkIndex > pickerLinkCount - 1) linkIndex = Math.max(0, pickerLinkCount - 1)
     if (!canSelectLink && focusSection === "links") focusSection = "dns"
   }
 
   function selectLinkByDelta(delta) {
-    if (activeLinkCount === 0) return
-    linkIndex = Math.max(0, Math.min(activeLinkCount - 1, linkIndex + delta))
+    if (pickerLinkCount === 0) return
+    linkIndex = Math.max(0, Math.min(pickerLinkCount - 1, linkIndex + delta))
   }
 
   function activateLink() {
-    if (linkIndex < 0 || linkIndex >= activeLinkCount) return
-    var link = activeLinks[linkIndex]
+    if (linkIndex < 0 || linkIndex >= pickerLinkCount) return
+    var link = pickerLinks[linkIndex]
     if (link) selectLink(link.iface)
   }
 
@@ -488,16 +488,24 @@ Panel {
   property var activeLinks: []
   readonly property int activeLinkCount: activeLinks.length
   readonly property string barTooltip: Model.barTooltip(activeLinks)
-  readonly property string activeLinksTitle: Model.activeLinksTitle(activeLinks)
+
+  // Cards offered in the picker. Wider than activeLinks on purpose: a radio that
+  // just dropped is still listed, because gating the picker on connected links
+  // meant a dropping radio took the whole section with it -- removing the
+  // control needed to inspect or reconnect that card.
+  property var pickerLinks: []
+  readonly property int pickerLinkCount: pickerLinks.length
+  readonly property string pickerTitleText: Model.pickerTitle(activeLinkCount)
 
   // The interface the stats are reported for. The picker writes selectedIface;
   // effectiveIface falls back to the default-route card, so a selection that
-  // disappears (radio off, cable out) degrades to something real instead of
-  // leaving the panel pinned to a dead card.
+  // disappears (card removed, radio disabled) degrades to something real instead
+  // of leaving the panel pinned to a card that no longer exists. Resolved
+  // against pickerLinks so selecting a disconnected card still targets it.
   property string selectedIface: ""
-  readonly property string effectiveIface: Model.hasLinkIface(activeLinks, selectedIface)
+  readonly property string effectiveIface: Model.hasLinkIface(pickerLinks, selectedIface)
     ? selectedIface
-    : Model.defaultLinkIface(activeLinks)
+    : Model.defaultLinkIface(pickerLinks)
 
   // The default-route interface, reported by the bundled helper. Kept separate
   // from info.iface because info now describes the *selected* card, while
@@ -508,6 +516,7 @@ Panel {
     var parsed = Model.parseLinks(raw)
     defaultIface = parsed.defaultIface
     activeLinks = Model.collectLinks(parsed.links)
+    pickerLinks = Model.collectPickerLinks(parsed.links)
   }
 
   function selectLink(iface) {
@@ -1464,20 +1473,21 @@ Panel {
 
       // ---------- Interface picker ----------
       // Retargets the stats above onto a specific card, mirroring the display
-      // plugin's monitor picker. Only shown when more than one link is up;
-      // with a single link the hero already names it.
+      // plugin's monitor picker. Stays on screen whenever the machine has more
+      // than one selectable card, including when one of them has dropped, so a
+      // disconnected radio can still be inspected and reconnected.
       PanelSeparator {
-        visible: root.activeLinkCount > 1
+        visible: root.canSelectLink
         foreground: root.bar.foreground
       }
 
       Column {
-        visible: root.activeLinkCount > 1
+        visible: root.canSelectLink
         width: parent.width
         spacing: Style.space(10)
 
         PanelSectionHeader {
-          text: root.activeLinksTitle
+          text: root.pickerTitleText
           foreground: root.bar.foreground
           fontFamily: root.bar.fontFamily
         }
@@ -1485,15 +1495,15 @@ Panel {
         Grid {
           id: linkRow
           width: parent.width
-          columns: Math.max(1, root.activeLinkCount)
+          columns: Math.max(1, root.pickerLinkCount)
           spacing: Style.spacing.xs
 
-          readonly property real cellWidth: root.activeLinkCount > 0
+          readonly property real cellWidth: root.pickerLinkCount > 0
             ? (width - spacing * (columns - 1)) / columns
             : 0
 
           Repeater {
-            model: root.activeLinks
+            model: root.pickerLinks
 
             LinkPill {
               required property var modelData

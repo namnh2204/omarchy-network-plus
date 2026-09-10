@@ -122,9 +122,59 @@ assert.equal(model.linkDetail(wifi("wlo1", "Net", 72, "10.0.0.2")), "72%")
 assert.equal(model.linkDetail({ kind: "wifi", iface: "wlo1", signal: -1 }), "")
 assert.equal(model.linkDetail({ kind: "ethernet", iface: "enp2s0", speed: "2500" }), "2.5gbit")
 
-// Wi-Fi strength picks a glyph; a disconnected link falls back to the off icon.
+// Wi-Fi strength picks a glyph. A card that is not connected gets the off icon
+// rather than a weak-signal glyph, which would read as "connected, but barely".
 assert.equal(model.linkIcon(wifi("wlo1", "Net", 100, "10.0.0.2")), model.wifiIconFor(100))
-assert.equal(model.linkIcon({ kind: "ethernet", iface: "enp2s0" }), model.connectionIcon("ethernet", -1))
+assert.equal(model.linkIcon({ kind: "ethernet", iface: "enp2s0", connected: true }), model.connectionIcon("ethernet", -1))
+assert.equal(model.linkIcon({ kind: "ethernet", iface: "enp2s0", connected: false }), model.connectionIcon("disconnected", -1))
+assert.equal(model.linkIcon({ kind: "wifi", iface: "wlo1", connected: false, signal: 90 }), model.connectionIcon("disconnected", -1))
+
+// ---------------------------------------------------------------------------
+// collectPickerLinks: the picker must survive a radio dropping.
+//
+// Gating it on connected links meant a dropping radio took the whole section
+// with it, removing the control needed to inspect or reconnect that card.
+// ---------------------------------------------------------------------------
+const oneDown = model.parseLinks([
+  "default_iface\twlp3s0",
+  "link\tenp2s0\tethernet\tfalse\t\t\t\t-1",
+  "link\twlo1\twifi\tfalse\t\t\t\t",
+  "link\twlp3s0\twifi\ttrue\tHomeNet\t100\t192.0.2.24\t",
+  ""
+].join("\n"))
+
+// Only one link is up, so the tooltip/glyph list has one entry...
+assert.equal(model.collectLinks(oneDown.links).length, 1)
+// ...but both radios remain selectable, so the picker stays on screen.
+const picker = model.collectPickerLinks(oneDown.links)
+assert.deepEqual(picker.map(l => l.iface), ["wlp3s0", "wlo1"])
+// The connected card sorts first.
+assert.equal(picker[0].connected, true)
+assert.equal(picker[1].connected, false)
+
+// An empty Ethernet port is not offered: there is nothing to act on. A Wi-Fi
+// radio always is, because selecting it is how you reach its network list.
+assert.equal(picker.some(l => l.iface === "enp2s0"), false)
+assert.equal(
+  model.collectPickerLinks([{ kind: "ethernet", iface: "enp2s0", connected: true, address: "10.0.0.3" }]).length,
+  1
+)
+
+// Selecting a disconnected card must resolve against the picker list, so the
+// panel can target a radio that is currently down.
+assert.equal(model.hasLinkIface(picker, "wlo1"), true)
+assert.equal(model.linkIndexForIface(picker, "wlo1"), 1)
+
+// A dropped card is called out rather than looking like a live one.
+assert.ok(model.linkPillTooltip(picker[1]).includes("not connected"))
+assert.ok(!model.linkPillTooltip(picker[0]).includes("not connected"))
+// Its label still says something useful even though the SSID is gone.
+assert.equal(model.linkPillLabel(picker[1]), "wlo1")
+
+// Header counts what is live, but does not vanish when nothing is.
+assert.equal(model.pickerTitle(2), "INTERFACES · 2 ACTIVE")
+assert.equal(model.pickerTitle(1), "INTERFACES · 1 ACTIVE")
+assert.equal(model.pickerTitle(0), "NETWORK INTERFACES")
 
 // ---------------------------------------------------------------------------
 // Tooltip: names every link, so both radios are visible from the single bar
@@ -149,11 +199,6 @@ assert.ok(!model.linkPillTooltip(twoWifi[1]).includes("default route"))
 assert.equal(model.linkPillLabel(wifi("wlo1", "HomeNet", 70, "10.0.0.2")), "wlo1")
 assert.equal(model.linkPillLabel({ kind: "ethernet", iface: "enp2s0" }), "enp2s0")
 assert.equal(model.linkPillLabel({ kind: "ethernet", iface: "" }), "Ethernet")
-
-// Section header only counts when there is something to choose between.
-assert.equal(model.activeLinksTitle(twoWifi), "ACTIVE CONNECTIONS: 2")
-assert.equal(model.activeLinksTitle([twoWifi[0]]), "")
-assert.equal(model.activeLinksTitle([]), "")
 
 // ---------------------------------------------------------------------------
 // Selection: the picker's fallback behavior.
