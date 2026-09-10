@@ -1,0 +1,105 @@
+#!/bin/bash
+
+# Per-interface network status for the My Network plugin.
+#
+# The stock omarchy-network-status resolves exactly one interface, the
+# default-route device from `ip route get`. That makes it impossible to report on
+# a second connected card, so this helper takes the interface as an argument and
+# reports on whichever link the panel is showing.
+#
+# Output is the same tab-separated key/value stream the stock command emits, so
+# Model.parseKeyValue() consumes it unchanged, plus a `default_iface` line so the
+# panel can mark which card actually carries the default route.
+#
+# Usage: omarchy-network-link-status [iface]
+#        With no argument, reports on the default-route interface.
+
+internet_probe=1.1.1.1
+requested=${1:-}
+
+# Interface names reach argv here; keep them to what the kernel allows.
+if [[ -n $requested && ! $requested =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "omarchy-network-link-status: invalid interface name" >&2
+  exit 2
+fi
+
+default_iface=$(ip route get "$internet_probe" 2>/dev/null |
+  awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+
+iface=${requested:-$default_iface}
+
+printf 'default_iface\t%s\n' "$default_iface"
+
+[[ -z $iface ]] && exit 0
+[[ -d /sys/class/net/$iface ]] || exit 0
+
+# Address and prefix for this specific link rather than the routed source
+# address, so each card reports its own IP.
+addr_json=$(ip -j addr show "$iface" 2>/dev/null)
+ip_addr=$(jq -r '.[0].addr_info[]? | select(.family == "inet") | .local // ""' <<<"$addr_json" 2>/dev/null | head -n 1)
+prefix=$(jq -r '.[0].addr_info[]? | select(.family == "inet") | .prefixlen // ""' <<<"$addr_json" 2>/dev/null | head -n 1)
+
+# Per-link default gateway. A card that is up but carries no default route
+# simply has none, which the panel renders as "--".
+gateway=$(ip -j route show default dev "$iface" 2>/dev/null | jq -r '.[0].gateway // ""' 2>/dev/null)
+
+printf 'iface\t%s\n' "$iface"
+printf 'ip\t%s\n' "$ip_addr"
+printf 'prefix\t%s\n' "$prefix"
+printf 'gateway\t%s\n' "$gateway"
+
+if [[ -r /sys/class/net/$iface/statistics/rx_bytes ]]; then
+  printf 'rx_bytes\t%s\n' "$(cat /sys/class/net/$iface/statistics/rx_bytes)"
+fi
+if [[ -r /sys/class/net/$iface/statistics/tx_bytes ]]; then
+  printf 'tx_bytes\t%s\n' "$(cat /sys/class/net/$iface/statistics/tx_bytes)"
+fi
+
+if [[ -d /sys/class/net/$iface/wireless ]]; then
+  printf 'type\twifi\n'
+
+  if omarchy-cmd-present iw; then
+    link=$(iw dev "$iface" link 2>/dev/null)
+
+    if [[ -n $link ]]; then
+      printf 'ssid\t%s\n' "$(awk '/SSID:/ { sub(/.*SSID: /, ""); print; exit }' <<<"$link")"
+      printf 'signal_dbm\t%s\n' "$(awk '/signal:/ { print $2; exit }' <<<"$link")"
+      printf 'freq\t%s\n' "$(awk '/freq:/ { print $2; exit }' <<<"$link")"
+      printf 'bitrate\t%s %s\n' "$(awk '/tx bitrate:/ { print $3; exit }' <<<"$link")" "$(awk '/tx bitrate:/ { print $4; exit }' <<<"$link")"
+    fi
+  fi
+else
+  printf 'type\tethernet\n'
+  [[ -r /sys/class/net/$iface/speed ]] && printf 'speed\t%s\n' "$(cat /sys/class/net/$iface/speed)"
+  [[ -r /sys/class/net/$iface/duplex ]] && printf 'duplex\t%s\n' "$(cat /sys/class/net/$iface/duplex)"
+fi
+
+ping_latency_ms() {
+  local host=$1
+  # -I binds the probe to this interface, so latency belongs to the card being
+  # shown instead of whichever link the default route happens to pick.
+  LC_ALL=C ping -n -c 1 -W 1 -I "$iface" "$host" 2>/dev/null |
+    awk -F'time[=<]' '/time[=<]/ { split($2, parts, " "); print parts[1]; exit }'
+}
+
+omarchy-cmd-present ping || exit 0
+
+tmpdir=$(mktemp -d) || exit 0
+trap 'rm -rf "$tmpdir"' EXIT
+router_pid=""
+
+if [[ -n $gateway ]]; then
+  ping_latency_ms "$gateway" >"$tmpdir/router" &
+  router_pid=$!
+fi
+
+ping_latency_ms "$internet_probe" >"$tmpdir/internet" &
+internet_pid=$!
+
+if [[ -n $router_pid ]]; then
+  wait "$router_pid"
+  printf 'router_ping_ms\t%s\n' "$(cat "$tmpdir/router")"
+fi
+
+wait "$internet_pid"
+printf 'internet_ping_ms\t%s\n' "$(cat "$tmpdir/internet")"

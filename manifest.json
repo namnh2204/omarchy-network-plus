@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "namnh.network",
+  "name": "Network Plus",
+  "version": "1.0.0",
+  "author": "namnh",
+  "license": "MIT",
+  "description": "Network panel that reports every connected interface, not just the default route",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Network Plus",
+    "description": "Wi-Fi list and connection state, with an interface picker for multi-link machines",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.network"
+  }
+}
