@@ -1,10 +1,6 @@
 const assert = require("node:assert/strict")
 const model = require("../Model.js")
 
-// Device type enums as the QML side passes them (Quickshell DeviceType).
-const WIFI = 1
-const WIRED = 2
-
 function wifi(iface, ssid, signal, address, primary) {
   return {
     kind: "wifi",
@@ -18,20 +14,63 @@ function wifi(iface, ssid, signal, address, primary) {
 }
 
 // ---------------------------------------------------------------------------
-// linkKindFor
+// parseLinks: reads `omarchy-network-links` output. This replaced enumerating
+// links from the shell's Wi-Fi network objects, which only carry SSID/signal for
+// the one device the scanner is armed on -- the root cause of the original bug,
+// where the second radio came back with an empty SSID and was dropped.
 // ---------------------------------------------------------------------------
-assert.equal(model.linkKindFor(WIFI, WIFI, WIRED), "wifi")
-assert.equal(model.linkKindFor(WIRED, WIFI, WIRED), "ethernet")
-assert.equal(model.linkKindFor(0, WIFI, WIRED), "other")
+const helperOutput = [
+  "default_iface\twlp3s0",
+  "link\tenp2s0\tethernet\tfalse\t\t\t\t-1",
+  "link\twlo1\twifi\ttrue\tGuestNet 3582\t100\t192.168.137.61\t",
+  "link\twlp3s0\twifi\ttrue\tHomeNet\t100\t192.0.2.24\t",
+  ""
+].join("\n")
+
+const parsed = model.parseLinks(helperOutput)
+assert.equal(parsed.defaultIface, "wlp3s0")
+assert.equal(parsed.links.length, 3)
+
+// Each radio reports its own SSID, which is the whole point of the helper.
+const wlo1 = parsed.links.find(l => l.iface === "wlo1")
+const wlp = parsed.links.find(l => l.iface === "wlp3s0")
+assert.equal(wlo1.ssid, "GuestNet 3582")
+assert.equal(wlo1.address, "192.168.137.61")
+assert.equal(wlo1.connected, true)
+assert.equal(wlo1.signal, 100)
+assert.equal(wlp.ssid, "HomeNet")
+// primary is derived from default_iface, not from enumeration order.
+assert.equal(wlp.primary, true)
+assert.equal(wlo1.primary, false)
+
+// A down interface parses but is not connected.
+const eth = parsed.links.find(l => l.iface === "enp2s0")
+assert.equal(eth.connected, false)
+assert.equal(eth.kind, "ethernet")
+
+// Both radios survive collection: the regression this plugin exists to fix.
+const fromHelper = model.collectLinks(parsed.links)
+assert.equal(fromHelper.length, 2)
+assert.deepEqual(fromHelper.map(l => l.ssid), ["HomeNet", "GuestNet 3582"])
+// The default-route card leads and is what the panel opens on.
+assert.equal(model.defaultLinkIface(fromHelper), "wlp3s0")
+
+// Malformed and empty input must not throw.
+assert.deepEqual(model.parseLinks("").links, [])
+assert.equal(model.parseLinks("").defaultIface, "")
+assert.deepEqual(model.parseLinks(null).links, [])
+assert.deepEqual(model.parseLinks("garbage\nlines\n").links, [])
 
 // ---------------------------------------------------------------------------
-// isPresentableLink: only links that can carry traffic belong on screen.
+// isPresentableLink: the helper already requires carrier, an address and (for
+// Wi-Fi) an association, so `connected` is the single source of truth. Gating on
+// ssid here is what dropped the unselected radio before.
 // ---------------------------------------------------------------------------
 assert.equal(model.isPresentableLink(wifi("wlo1", "Net", 70, "10.0.0.2")), true)
 assert.equal(model.isPresentableLink({ kind: "wifi", iface: "wlo1", connected: false, ssid: "Net" }), false)
-// Associating radio with no network yet must not paint a glyph.
-assert.equal(model.isPresentableLink({ kind: "wifi", iface: "wlo1", connected: true, ssid: "" }), false)
-// Ethernet has no SSID, so it only needs to be up.
+// A connected Wi-Fi link with no SSID yet still counts: the helper only reports
+// connected=true once it is associated, and dropping it here hid the card.
+assert.equal(model.isPresentableLink({ kind: "wifi", iface: "wlo1", connected: true, ssid: "" }), true)
 assert.equal(model.isPresentableLink({ kind: "ethernet", iface: "enp2s0", connected: true }), true)
 assert.equal(model.isPresentableLink({ kind: "ethernet", iface: "enp2s0", connected: false }), false)
 assert.equal(model.isPresentableLink(null), false)
@@ -162,10 +201,10 @@ assert.equal(model.helperPath("/plugins/net", "../../evil"), "")
 // ---------------------------------------------------------------------------
 // Stock helpers must keep working: the clone still drives the rest of the panel.
 // ---------------------------------------------------------------------------
-const parsed = model.parseKeyValue("default_iface\twlo1\niface\twlo1\nip\t10.0.0.2\ntype\twifi\n")
-assert.equal(parsed.default_iface, "wlo1")
-assert.equal(parsed.iface, "wlo1")
-assert.equal(parsed.type, "wifi")
+const kv = model.parseKeyValue("default_iface\twlo1\niface\twlo1\nip\t10.0.0.2\ntype\twifi\n")
+assert.equal(kv.default_iface, "wlo1")
+assert.equal(kv.iface, "wlo1")
+assert.equal(kv.type, "wifi")
 assert.equal(model.formatHeaderSpeed("2500"), "2.5gbit")
 assert.equal(model.formatPingLatency(-1, false), "--")
 

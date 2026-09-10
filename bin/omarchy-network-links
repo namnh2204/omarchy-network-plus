@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# List every network link with its own SSID, signal, address and state.
+#
+# Why this exists: the shell's Wi-Fi network objects only carry SSID and signal
+# for the single device the scanner is armed on. Enumerating links from that data
+# silently drops every other radio, which is the bug this plugin exists to fix.
+# The kernel and NetworkManager know each card's association without any scan, so
+# ask them instead.
+#
+# Output is one `link` record per interface, tab-separated:
+#   link<TAB>iface<TAB>kind<TAB>connected<TAB>ssid<TAB>signal<TAB>address<TAB>speed
+# plus a single `default_iface` line naming the default-route device.
+#
+# signal is 0-100. Wi-Fi reports dBm, converted with the usual piecewise map so
+# the value matches what NetworkManager shows closely enough for a bar glyph.
+
+internet_probe=1.1.1.1
+
+default_iface=$(ip route get "$internet_probe" 2>/dev/null |
+  awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+printf 'default_iface\t%s\n' "$default_iface"
+
+signal_percent_from_dbm() {
+  local dbm=$1
+  [[ -z $dbm ]] && return
+
+  awk -v d="$dbm" 'BEGIN {
+    if (d >= -50) { print 100; exit }
+    if (d <= -100) { print 0; exit }
+    v = 2 * (d + 100)
+    if (v < 0) v = 0
+    if (v > 100) v = 100
+    printf "%d", v
+  }'
+}
+
+for path in /sys/class/net/*; do
+  iface=${path##*/}
+
+  # Skip loopback and virtual plumbing: only real cards belong in the picker.
+  [[ $iface == lo ]] && continue
+  [[ -e $path/device || -d $path/wireless ]] || continue
+
+  if [[ -d $path/wireless ]]; then
+    kind=wifi
+  else
+    kind=ethernet
+  fi
+
+  operstate=$(cat "$path/operstate" 2>/dev/null)
+  ssid=""
+  signal=""
+  speed=""
+
+  # An address is the honest test of "can carry traffic": a card can be UP with
+  # no IP while it is still associating.
+  address=$(ip -j addr show "$iface" 2>/dev/null |
+    jq -r '.[0].addr_info[]? | select(.family == "inet") | .local // ""' 2>/dev/null | head -n 1)
+
+  if [[ $kind == wifi ]]; then
+    if command -v iw >/dev/null 2>&1; then
+      link=$(iw dev "$iface" link 2>/dev/null)
+      if [[ -n $link && $link != "Not connected."* ]]; then
+        ssid=$(awk '/SSID:/ { sub(/.*SSID: /, ""); print; exit }' <<<"$link")
+        signal=$(signal_percent_from_dbm "$(awk '/signal:/ { print $2; exit }' <<<"$link")")
+      fi
+    fi
+  else
+    [[ -r $path/speed ]] && speed=$(cat "$path/speed" 2>/dev/null)
+  fi
+
+  # Connected means: carrier up and an IPv4 address present. Wi-Fi additionally
+  # needs an association, otherwise a scanning radio would look connected.
+  connected=false
+  if [[ $operstate == up && -n $address ]]; then
+    if [[ $kind == ethernet || -n $ssid ]]; then
+      connected=true
+    fi
+  fi
+
+  printf 'link\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$iface" "$kind" "$connected" "$ssid" "$signal" "$address" "$speed"
+done

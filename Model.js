@@ -360,20 +360,62 @@ function shouldRepromptPassphrase(reason, needsCredentials, reasons) {
 // arrive as arguments rather than being referenced directly.
 // ---------------------------------------------------------------------------
 
-function linkKindFor(type, wifiType, wiredType) {
-  if (type === wifiType) return "wifi"
-  if (type === wiredType) return "ethernet"
-  return "other"
+// Parse `omarchy-network-links` output into link rows plus the default-route
+// interface.
+//
+// This replaces enumerating links from the shell's Wi-Fi network objects. Those
+// only carry SSID and signal for the single device the scanner is armed on, so
+// every other radio came back with an empty SSID and was dropped -- which is the
+// bug this plugin exists to fix. The helper reads each card's association
+// straight from the kernel, so all links report independently of any scan.
+function parseLinks(raw) {
+  var lines = String(raw || "").split("\n")
+  var defaultIface = ""
+  var links = []
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i]
+    if (!line) continue
+
+    var parts = line.split("\t")
+    if (parts[0] === "default_iface") {
+      defaultIface = (parts[1] || "").trim()
+      continue
+    }
+    if (parts[0] !== "link") continue
+
+    var signal = parseInt(parts[5], 10)
+    links.push({
+      iface: (parts[1] || "").trim(),
+      kind: (parts[2] || "").trim(),
+      connected: (parts[3] || "").trim() === "true",
+      ssid: parts[4] || "",
+      signal: isFinite(signal) ? signal : -1,
+      address: (parts[6] || "").trim(),
+      speed: (parts[7] || "").trim(),
+      primary: false
+    })
+  }
+
+  for (var j = 0; j < links.length; j++) {
+    links[j].primary = links[j].iface !== "" && links[j].iface === defaultIface
+  }
+
+  return { defaultIface: defaultIface, links: links }
 }
 
 // A link is only worth showing when it is up. Wi-Fi additionally needs a
 // connected network behind it, otherwise an associating radio would paint a
 // full-strength glyph on the bar before it can carry traffic.
+// A link is worth showing when the helper says it can carry traffic. The helper
+// already requires carrier up, an IPv4 address, and (for Wi-Fi) an association,
+// so re-checking `ssid` here would be redundant. It was also the original bug:
+// SSID used to come from the shell's per-device network list, which is only
+// populated for the one radio the scanner is armed on, so every other card was
+// silently dropped.
 function isPresentableLink(link) {
   var value = link || {}
-  if (!value.connected) return false
-  if (value.kind === "wifi") return !!value.ssid
-  return value.kind === "ethernet" || value.kind === "other"
+  return !!value.connected
 }
 
 function linkLabel(link) {
@@ -565,7 +607,7 @@ function helperPath(pluginDir, name) {
 if (typeof module !== "undefined") {
   module.exports = {
     parseNetworkStatus: parseNetworkStatus,
-    linkKindFor: linkKindFor,
+    parseLinks: parseLinks,
     isPresentableLink: isPresentableLink,
     linkLabel: linkLabel,
     linkIcon: linkIcon,

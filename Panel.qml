@@ -416,6 +416,10 @@ Panel {
     syncWifiNetworks()
   }
 
+  // A card going up or down changes the picker, so re-enumerate immediately
+  // rather than waiting out linksPoll's interval.
+  onNetworkDevicesChanged: startLinks()
+
   onWifiNetworkObjectsChanged: syncWifiNetworks()
 
   function selectByDelta(delta) {
@@ -473,12 +477,15 @@ Panel {
     ? Math.round((connectedWifiNetwork.signalStrength || 0) * 100)
     : -1
 
-  // Every link that is up, not just the default route. The stock panel derives
-  // its state from a single device (findDevice returns the first connected
-  // match), so a second connected radio is invisible. This walks all
-  // NetworkManager devices instead, which drives the tooltip and the card
-  // picker below.
-  readonly property var activeLinks: Model.collectLinks(sampleLinks(networkDevices, defaultIface))
+  // Every link that is up, not just the default route.
+  //
+  // Sourced from the bundled `omarchy-network-links` helper rather than the
+  // shell's Wi-Fi network objects. Those only carry SSID and signal for the one
+  // device the scanner is armed on, so enumerating from them dropped every other
+  // radio (empty SSID) and the picker never appeared. The helper reads each
+  // card's association straight from the kernel, so all links report regardless
+  // of which device is scanning.
+  property var activeLinks: []
   readonly property int activeLinkCount: activeLinks.length
   readonly property string barTooltip: Model.barTooltip(activeLinks)
   readonly property string activeLinksTitle: Model.activeLinksTitle(activeLinks)
@@ -497,68 +504,18 @@ Panel {
   // "which link carries traffic" is what marks a pill as primary.
   property string defaultIface: ""
 
+  function updateLinks(raw) {
+    var parsed = Model.parseLinks(raw)
+    defaultIface = parsed.defaultIface
+    activeLinks = Model.collectLinks(parsed.links)
+  }
+
   function selectLink(iface) {
     if (!iface || iface === selectedIface) return
     selectedIface = iface
     // Repoll immediately: the visible stats belong to the previous card until a
     // fresh sample lands, and detailsPoll is on a 1.5s tick.
     startDetails()
-  }
-
-  // Snapshot each device as primitives. Handing live QObjects to a binding
-  // would keep NetworkManager-owned wrappers alive past their destruction
-  // during scan churn -- the same hazard Model.wifiRow() documents for rows.
-  // `routedIface` is passed in (not read off root) so the binding re-evaluates
-  // when the default route moves and `primary` stays correct.
-  function sampleLinks(devices, routedIface) {
-    var list = devices || []
-    var primaryIface = routedIface || ""
-    var rows = []
-
-    for (var i = 0; i < list.length; i++) {
-      var device = list[i]
-      if (!device) continue
-
-      var kindValue = Model.linkKindFor(device.type, DeviceType.Wifi, DeviceType.Wired)
-      if (kindValue === "other") continue
-
-      var iface = device.name || ""
-      var row = {
-        kind: kindValue,
-        iface: iface,
-        address: device.address || "",
-        connected: !!device.connected,
-        ssid: "",
-        signal: -1,
-        speed: "",
-        primary: iface !== "" && iface === primaryIface
-      }
-
-      if (kindValue === "wifi") {
-        var active = connectedNetworkOf(device)
-        if (active) {
-          row.ssid = active.name || ""
-          row.signal = Math.round((active.signalStrength || 0) * 100)
-        }
-      } else if (device.linkSpeed !== undefined) {
-        row.speed = String(device.linkSpeed || "")
-      }
-
-      rows.push(row)
-    }
-
-    return rows
-  }
-
-  // Per-device lookup: the panel-wide connectedWifiNetwork scans a single
-  // device's list, which cannot answer "what is this other radio on?".
-  function connectedNetworkOf(device) {
-    if (!device || !device.networks) return null
-    var networks = device.networks.values || []
-    for (var i = 0; i < networks.length; i++) {
-      if (networks[i] && networks[i].connected) return networks[i]
-    }
-    return null
   }
 
   function copyToClipboard(value) {
@@ -589,6 +546,15 @@ Panel {
   // Qt.resolvedUrl(".") keeps the plugin self-contained on a fresh machine.
   readonly property string pluginDir: Model.pluginDirFromUrl(String(Qt.resolvedUrl(".")))
   readonly property string linkStatusHelper: Model.helperPath(pluginDir, "omarchy-network-link-status")
+  readonly property string linksHelper: Model.helperPath(pluginDir, "omarchy-network-links")
+
+  // Enumerate every link. Independent of the Wi-Fi scanner, so both radios
+  // report even though only one device's network list is populated.
+  function startLinks() {
+    if (linksHelper === "" || linksProc.running) return
+    linksProc.command = [linksHelper]
+    linksProc.running = true
+  }
 
   // Poll the selected card. The stock command only ever reports the
   // default-route interface, so the helper takes the interface as an argument;
@@ -612,6 +578,7 @@ Panel {
 
   function refresh(scanWifi) {
     if (scanWifi === undefined) scanWifi = false
+    startLinks()
     startDetails()
     if (!dnsProc.running) {
       dnsProc.command = ["bash", "-c", root.dnsCommand("")]
@@ -991,6 +958,16 @@ Panel {
     }
   }
 
+  // Enumerates every link with its own SSID/signal/address, independent of
+  // which device the Wi-Fi scanner happens to be armed on.
+  Process {
+    id: linksProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.updateLinks(text)
+    }
+  }
+
   Timer {
     id: scanRestart
     interval: 100
@@ -1070,7 +1047,24 @@ Panel {
     interval: 1500
     repeat: true
     running: root.opened
-    onTriggered: root.startDetails()
+    onTriggered: {
+      root.startLinks()
+      root.startDetails()
+    }
+  }
+
+  // Link enumeration drives the bar tooltip, which is readable with the panel
+  // closed, so this keeps running. Deliberately slow: a bar widget is
+  // instantiated once per monitor and each tick spawns a process, so this is
+  // only a safety net. Cards coming up or going down arrive for free via
+  // onNetworkDevicesChanged, and detailsPoll keeps things fresh while open.
+  Timer {
+    id: linksPoll
+    interval: 15000
+    repeat: true
+    running: true
+    triggeredOnStart: true
+    onTriggered: root.startLinks()
   }
 
   Timer {
