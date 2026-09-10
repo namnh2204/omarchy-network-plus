@@ -9,7 +9,7 @@ The built-in `omarchy.network` widget collapses connectivity to a single link. O
 The bar stays a **single icon**, as stock. Multi-link state shows up in three places:
 
 - **Bar tooltip** names every active link: `HomeNet (72%) · wlp3s0 · 192.0.2.24`, one line per interface.
-- **`INTERFACES · n ACTIVE`** section in the panel, with one pill per card. Filled pill = the card carrying the default route; bold pill = the card whose stats are on screen. The section stays on screen whenever the machine has more than one selectable card, including when one has dropped, so a disconnected radio can still be inspected instead of vanishing from the panel.
+- **`INTERFACES · n ACTIVE`** section in the panel, with one pill per card. The filled pill is the card whose stats and Wi-Fi list are on screen; a trailing `·` marks the default-route card. The section stays on screen whenever the machine has more than one selectable card, including when one has dropped, so a disconnected radio can still be inspected instead of vanishing from the panel.
 - **Stats retarget** to the selected card. Ping, packet loss, throughput, IP and gateway all describe the interface you picked instead of always describing the default route.
 - **The Wi-Fi list retargets too.** Known/other networks describe the selected radio, so the connected entry matches the SSID in the header rather than showing the other card's network.
 

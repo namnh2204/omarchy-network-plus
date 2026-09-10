@@ -520,11 +520,23 @@ Panel {
   }
 
   function selectLink(iface) {
-    if (!iface || iface === selectedIface) return
+    if (!iface || !Model.hasLinkIface(pickerLinks, iface)) return
+
+    // Selection is the single source of truth for the hero, stats, Wi-Fi scan
+    // list and connected row. Do not early-return when the same pill is clicked:
+    // clicking it is also an explicit refresh request after a card reconnects.
     selectedIface = iface
-    // Repoll immediately: the visible stats belong to the previous card until a
-    // fresh sample lands, and detailsPoll is on a 1.5s tick.
+    startLinks()
     startDetails()
+
+    // Let effectiveIface/wifiDevice bindings settle first, then move the scanner
+    // and rebuild Known Networks from that exact device. Without the deferred
+    // sync, a click can read the previous card for one frame and preserve its
+    // connected row until the next NetworkManager notification.
+    Qt.callLater(function() {
+      setScannerEnabled(true)
+      syncWifiNetworks()
+    })
   }
 
   function copyToClipboard(value) {
@@ -1776,15 +1788,16 @@ Panel {
     }
   }
 
-  // One interface pill. `active` (fill) marks the card carrying the default
-  // route and `selected` (bold) marks the card whose stats are on screen, so it
-  // stays clear which link the machine is really using after retargeting.
+  // One interface pill. Fill means exactly one thing: this is the selected
+  // card whose hero, stats and Wi-Fi list are on screen. The default route gets
+  // a quiet trailing dot instead; using `active` for it filled wlp... forever
+  // and made selection look stuck even after wlo1 was selected.
   component LinkPill: Button {
     id: linkPill
     required property var link
     required property int pillIndex
 
-    text: root.linkIcon(link) + "  " + root.linkPillLabel(link)
+    text: root.linkIcon(link) + "  " + root.linkPillLabel(link) + (link.primary ? " ·" : "")
     tooltipText: root.linkPillTooltip(link)
     fontSize: Style.font.caption
     foreground: root.bar.foreground
@@ -1793,7 +1806,7 @@ Panel {
     verticalPadding: Style.spacing.controlPaddingY
     bordered: true
 
-    active: !!linkPill.link.primary
+    active: false
     selected: root.effectiveIface === linkPill.link.iface
     hasCursor: root.cursorActive && root.focusSection === "links"
       && root.linkIndex === linkPill.pillIndex
