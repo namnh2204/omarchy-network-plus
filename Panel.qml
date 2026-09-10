@@ -67,7 +67,12 @@ Panel {
   readonly property string connectionPhrase: connectionPhrases[connectionPhraseIndex % connectionPhrases.length]
   readonly property bool networkManagerAvailable: Networking.backend === NetworkBackendType.NetworkManager
   readonly property var networkDevices: Networking.devices ? Networking.devices.values : []
-  readonly property var wifiDevice: findDevice(DeviceType.Wifi)
+  // Follows the interface picker instead of grabbing the first connected radio.
+  // findDevice() returns whichever Wi-Fi device enumerates first, so on a
+  // two-radio machine the scan list below used to describe a different card
+  // than the stats above it -- "Known Networks" would show the other radio's
+  // SSID as connected. Falls back to findDevice() before any selection exists.
+  readonly property var wifiDevice: deviceForIface(effectiveIface, DeviceType.Wifi) || findDevice(DeviceType.Wifi)
   readonly property var wifiNetworkObjects: wifiDevice && wifiDevice.networks ? wifiDevice.networks.values : []
   readonly property var connectedWifiNetwork: findConnectedWifiNetwork()
   property var wifiNetworks: []
@@ -714,6 +719,19 @@ Panel {
   // Prefer a connected device: a machine can expose several NICs of the
   // same type (e.g. an idle onboard port alongside the active adapter),
   // and the first-enumerated one may be carrierless.
+  // Resolve a device by interface name, so the panel can follow the picker
+  // rather than enumeration order.
+  function deviceForIface(iface, type) {
+    if (!iface) return null
+    var devices = networkDevices || []
+    for (var i = 0; i < devices.length; i++) {
+      var device = devices[i]
+      if (!device || device.type !== type) continue
+      if ((device.name || "") === iface) return device
+    }
+    return null
+  }
+
   function findDevice(type) {
     var devices = networkDevices || []
     var fallback = null
