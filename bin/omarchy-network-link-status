@@ -39,9 +39,16 @@ addr_json=$(ip -j addr show "$iface" 2>/dev/null)
 ip_addr=$(jq -r '.[0].addr_info[]? | select(.family == "inet") | .local // ""' <<<"$addr_json" 2>/dev/null | head -n 1)
 prefix=$(jq -r '.[0].addr_info[]? | select(.family == "inet") | .prefixlen // ""' <<<"$addr_json" 2>/dev/null | head -n 1)
 
-# Per-link default gateway. A card that is up but carries no default route
-# simply has none, which the panel renders as "--".
+# Per-link router. Prefer the installed default route, but `never-default=yes`
+# intentionally suppresses that route on secondary links. NetworkManager still
+# retains the router supplied by DHCP, and it is the useful gateway to display
+# for that card (for example a Windows hotspot at 192.168.137.1). Showing the
+# DHCP router does not alter routing policy or add another default route.
 gateway=$(ip -j route show default dev "$iface" 2>/dev/null | jq -r '.[0].gateway // ""' 2>/dev/null)
+if [[ -z $gateway ]] && command -v nmcli >/dev/null 2>&1; then
+  dhcp_options=$(nmcli -g DHCP4.OPTION device show "$iface" 2>/dev/null)
+  gateway=$(sed -n 's/.* | routers = \([^ |]*\).*/\1/p' <<<"$dhcp_options" | head -n 1)
+fi
 
 printf 'iface\t%s\n' "$iface"
 printf 'ip\t%s\n' "$ip_addr"
